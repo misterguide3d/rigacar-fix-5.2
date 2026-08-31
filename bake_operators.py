@@ -74,25 +74,190 @@ def find_wheelbrake_bone(bones, position, side, index):
     return bones.get(backward_compatible_bone_name)
 
 
+# ---------------------------------------------------------------------------
+# Animation & F-Curve Utilities (Blender 4.0 - 5.2+ Slotted Actions Support)
+# ---------------------------------------------------------------------------
+
+def get_channelbags(action, obj=None):
+    """Retrieve all channelbags (or FCurve containers) from an action across Blender versions."""
+    if action is None:
+        return []
+
+    # Legacy Blender (< 5.0) where Action.fcurves exists directly
+    if hasattr(action, 'fcurves'):
+        return [action]
+
+    channelbags = []
+
+    # Modern Blender 5.0+ with Action Slots: try object's assigned slot
+    if obj is not None and getattr(obj, 'animation_data', None):
+        slot = getattr(obj.animation_data, 'action_slot', None)
+        if slot is not None:
+            try:
+                cb = bpy_extras.anim_utils.action_get_channelbag_for_slot(action, slot)
+                if cb is not None:
+                    channelbags.append(cb)
+            except Exception:
+                pass
+
+    # Collect from all action layers & strips
+    if not channelbags and hasattr(action, 'layers'):
+        for layer in action.layers:
+            if hasattr(layer, 'strips'):
+                for strip in layer.strips:
+                    if hasattr(strip, 'channelbags'):
+                        for cb in strip.channelbags:
+                            channelbags.append(cb)
+                    elif hasattr(strip, 'channelbag') and strip.channelbag:
+                        channelbags.append(strip.channelbag)
+
+    # Collect from all slots if still empty
+    if not channelbags and hasattr(action, 'slots'):
+        try:
+            for slot in action.slots:
+                cb = bpy_extras.anim_utils.action_get_channelbag_for_slot(action, slot)
+                if cb is not None and cb not in channelbags:
+                    channelbags.append(cb)
+        except Exception:
+            pass
+
+    return channelbags
+
+
+def get_or_create_channelbag_for_write(obj, action):
+    """Ensure a writable channelbag exists for the given object and action."""
+    if action is None:
+        return None
+
+    # Legacy Blender (< 5.0)
+    if hasattr(action, 'fcurves'):
+        return action
+
+    # Blender 5.0+ Slotted Actions
+    try:
+        slot = getattr(obj.animation_data, 'action_slot', None) if obj and obj.animation_data else None
+        if slot is None and hasattr(action, 'slots'):
+            if len(action.slots) > 0:
+                slot = action.slots[0]
+            else:
+                try:
+                    slot = action.slots.new(id_type='OBJECT', name=obj.name if obj else "Slot")
+                except TypeError:
+                    slot = action.slots.new(obj.name if obj else "Slot")
+            if obj and obj.animation_data and hasattr(obj.animation_data, 'action_slot'):
+                try:
+                    obj.animation_data.action_slot = slot
+                except Exception:
+                    pass
+
+        if slot is not None:
+            return bpy_extras.anim_utils.action_ensure_channelbag_for_slot(action, slot)
+    except Exception:
+        pass
+
+    bags = get_channelbags(action, obj)
+    return bags[0] if bags else None
+
+
+def find_fcurve_in_action(action, data_path, index=0, obj=None):
+    """Find an F-Curve by data_path and index in an Action (Blender 4.0 - 5.2+)."""
+    if action is None:
+        return None
+
+    if hasattr(action, 'fcurves'):
+        try:
+            return action.fcurves.find(data_path, index=index)
+        except TypeError:
+            return action.fcurves.find(data_path)
+
+    for cb in get_channelbags(action, obj):
+        if hasattr(cb, 'fcurves'):
+            try:
+                fc = cb.fcurves.find(data_path, index=index)
+                if fc is not None:
+                    return fc
+            except Exception:
+                pass
+            for fc in cb.fcurves:
+                if fc.data_path == data_path and (fc.array_index == index or index == 0):
+                    return fc
+    return None
+
+
+def remove_fcurve_from_action(obj, action, data_path, index=0):
+    """Remove matching F-Curves from an Action."""
+    if hasattr(action, 'fcurves'):
+        fc = None
+        try:
+            fc = action.fcurves.find(data_path, index=index)
+        except TypeError:
+            fc = action.fcurves.find(data_path)
+        if fc is not None:
+            action.fcurves.remove(fc)
+        return
+
+    for cb in get_channelbags(action, obj):
+        if hasattr(cb, 'fcurves'):
+            to_remove = [fc for fc in cb.fcurves if fc.data_path == data_path and (fc.array_index == index or index == 0)]
+            for fc in to_remove:
+                try:
+                    cb.fcurves.remove(fc)
+                except Exception:
+                    pass
+
+
+def get_action_frame_range(action, context=None):
+    """Get frame range for an action safely across Blender versions."""
+    if action is not None:
+        if hasattr(action, 'frame_range') and action.frame_range[1] > action.frame_range[0]:
+            return int(action.frame_range[0]), int(action.frame_range[1])
+
+        all_frames = []
+        for cb in get_channelbags(action):
+            if hasattr(cb, 'fcurves'):
+                for fc in cb.fcurves:
+                    for kp in fc.keyframe_points:
+                        all_frames.append(kp.co[0])
+        if all_frames:
+            return int(min(all_frames)), int(max(all_frames))
+
+    if context and hasattr(context, 'scene'):
+        return int(context.scene.frame_start), int(context.scene.frame_end)
+    return 1, 250
+
+
 def clear_property_animation(context, property_name, remove_keyframes=True):
     if remove_keyframes and context.object.animation_data and context.object.animation_data.action:
         fcurve_datapath = '["%s"]' % property_name
         action = context.object.animation_data.action
-        fcurve = action.fcurves.find(fcurve_datapath, index=0)
-        if fcurve is None:
-            fcurve = action.fcurves.find(fcurve_datapath)
-        if fcurve is not None:
-            action.fcurves.remove(fcurve)
+        remove_fcurve_from_action(context.object, action, fcurve_datapath)
     context.object[property_name] = .0
 
 
 def create_property_animation(context, property_name):
     action = context.object.animation_data.action
     fcurve_datapath = '["%s"]' % property_name
-    try:
-        return action.fcurves.new(fcurve_datapath, index=0, action_group='Wheels rotation')
-    except TypeError:
-        return action.fcurves.new(fcurve_datapath, index=0)
+
+    # Legacy Blender (< 5.0)
+    if hasattr(action, 'fcurves'):
+        try:
+            return action.fcurves.new(fcurve_datapath, index=0, action_group='Wheels rotation')
+        except TypeError:
+            return action.fcurves.new(fcurve_datapath, index=0)
+
+    # Blender 5.0+ Slotted Actions
+    cb = get_or_create_channelbag_for_write(context.object, action)
+    if cb and hasattr(cb, 'fcurves'):
+        if hasattr(cb.fcurves, 'ensure'):
+            try:
+                return cb.fcurves.ensure(fcurve_datapath, index=0, group_name='Wheels rotation')
+            except TypeError:
+                return cb.fcurves.ensure(fcurve_datapath, index=0)
+        try:
+            return cb.fcurves.new(fcurve_datapath, index=0, group_name='Wheels rotation')
+        except TypeError:
+            return cb.fcurves.new(fcurve_datapath, index=0)
+    return None
 
 
 class FCurvesEvaluator(object):
@@ -148,6 +313,47 @@ def fix_old_steering_rotation(rig_object):
             rig_object.pose.bones['MCH-Steering.rotation'].rotation_mode = 'QUATERNION'
 
 
+def select_bone(armature_obj, bone_name, select=True):
+    """Safely select or deselect a bone across all Blender versions."""
+    if hasattr(armature_obj, 'pose') and armature_obj.pose and bone_name in armature_obj.pose.bones:
+        pb = armature_obj.pose.bones[bone_name]
+        if hasattr(pb, 'bone') and hasattr(pb.bone, 'select'):
+            try:
+                pb.bone.select = select
+                return
+            except Exception:
+                pass
+        if hasattr(pb, 'select'):
+            try:
+                pb.select = select
+                return
+            except Exception:
+                pass
+    if hasattr(armature_obj, 'data') and hasattr(armature_obj.data, 'bones') and bone_name in armature_obj.data.bones:
+        db = armature_obj.data.bones[bone_name]
+        if hasattr(db, 'select'):
+            try:
+                db.select = select
+                return
+            except Exception:
+                pass
+
+
+def is_bone_selected(armature_obj, bone_name):
+    """Check if a bone is selected across all Blender versions."""
+    if hasattr(armature_obj, 'pose') and armature_obj.pose and bone_name in armature_obj.pose.bones:
+        pb = armature_obj.pose.bones[bone_name]
+        if hasattr(pb, 'bone') and hasattr(pb.bone, 'select'):
+            return pb.bone.select
+        if hasattr(pb, 'select'):
+            return pb.select
+    if hasattr(armature_obj, 'data') and hasattr(armature_obj.data, 'bones') and bone_name in armature_obj.data.bones:
+        db = armature_obj.data.bones[bone_name]
+        if hasattr(db, 'select'):
+            return db.select
+    return False
+
+
 class BakingOperator(object):
     frame_start: bpy.props.IntProperty(name='Start Frame', min=1)
     frame_end: bpy.props.IntProperty(name='End Frame', min=1)
@@ -168,8 +374,9 @@ class BakingOperator(object):
             context.object.animation_data.action = bpy.data.actions.new("%sAction" % context.object.name)
 
         action = context.object.animation_data.action
-        self.frame_start = int(action.frame_range[0])
-        self.frame_end = int(action.frame_range[1])
+        frame_min, frame_max = get_action_frame_range(action, context)
+        self.frame_start = frame_min
+        self.frame_end = frame_max if frame_max > frame_min else frame_min + 100
 
         return context.window_manager.invoke_props_dialog(self)
 
@@ -182,39 +389,50 @@ class BakingOperator(object):
 
     def _create_euler_evaluator(self, action, source_bone):
         fcurve_name = 'pose.bones["%s"].rotation_euler' % source_bone.name
-        fc_root_rot = [action.fcurves.find(fcurve_name, index=i) for i in range(3)]
+        fc_root_rot = [find_fcurve_in_action(action, fcurve_name, index=i) for i in range(3)]
         return EulerToQuaternionFCurvesEvaluator(FCurvesEvaluator(fc_root_rot, default_value=(.0, .0, .0)))
 
     def _create_quaternion_evaluator(self, action, source_bone):
         fcurve_name = 'pose.bones["%s"].rotation_quaternion' % source_bone.name
-        fc_root_rot = [action.fcurves.find(fcurve_name, index=i) for i in range(4)]
+        fc_root_rot = [find_fcurve_in_action(action, fcurve_name, index=i) for i in range(4)]
         return QuaternionFCurvesEvaluator(FCurvesEvaluator(fc_root_rot, default_value=(1.0, .0, .0, .0)))
 
     def _create_location_evaluator(self, action, source_bone):
         fcurve_name = 'pose.bones["%s"].location' % source_bone.name
-        fc_root_loc = [action.fcurves.find(fcurve_name, index=i) for i in range(3)]
+        fc_root_loc = [find_fcurve_in_action(action, fcurve_name, index=i) for i in range(3)]
         return VectorFCurvesEvaluator(FCurvesEvaluator(fc_root_loc, default_value=(.0, .0, .0)))
 
     def _create_scale_evaluator(self, action, source_bone):
         fcurve_name = 'pose.bones["%s"].scale' % source_bone.name
-        fc_root_loc = [action.fcurves.find(fcurve_name, index=i) for i in range(3)]
+        fc_root_loc = [find_fcurve_in_action(action, fcurve_name, index=i) for i in range(3)]
         return VectorFCurvesEvaluator(FCurvesEvaluator(fc_root_loc, default_value=(1.0, 1.0, 1.0)))
 
     def _bake_action(self, context, *source_bones):
-        action = context.object.animation_data.action
-        nla_tweak_mode = getattr(context.object.animation_data, 'use_tweak_mode', False)
+        ob = context.object
+        action = ob.animation_data.action if ob.animation_data else None
+        nla_tweak_mode = getattr(ob.animation_data, 'use_tweak_mode', False) if ob.animation_data else False
+        prev_mode = ob.mode
 
-        # saving context
-        selected_bones = [b for b in context.object.data.bones if getattr(b, 'select', False)]
-        mode = context.object.mode
-        for b in selected_bones:
-            b.select = False
+        # Ensure POSE mode for bone selection and transform capture
+        if ob.mode != 'POSE':
+            bpy.ops.object.mode_set(mode='POSE')
 
-        bpy.ops.object.mode_set(mode='OBJECT')
+        # Save previous bone selection
+        selected_bone_names = [b.name for b in ob.data.bones if is_bone_selected(ob, b.name)]
+
+        # Deselect all bones
+        for b in ob.data.bones:
+            select_bone(ob, b.name, False)
+
+        # Save matrix basis and select target source bones
         source_bones_matrix_basis = []
         for source_bone in source_bones:
-            source_bones_matrix_basis.append(context.object.pose.bones[source_bone.name].matrix_basis.copy())
-            source_bone.select = True
+            pb = ob.pose.bones.get(source_bone.name)
+            if pb is not None:
+                source_bones_matrix_basis.append(pb.matrix_basis.copy())
+            else:
+                source_bones_matrix_basis.append(mathutils.Matrix.Identity(4))
+            select_bone(ob, source_bone.name, True)
 
         try:
             bake_options = bpy_extras.anim_utils.BakeOptions(
@@ -232,14 +450,14 @@ class BakingOperator(object):
                 do_custom_props=True
             )
             baked_action = bpy_extras.anim_utils.bake_action(
-                context.object,
+                ob,
                 action=None,
                 frames=range(self.frame_start, self.frame_end + 1),
                 bake_options=bake_options,
             )
         except (TypeError, AttributeError):
             baked_action = bpy_extras.anim_utils.bake_action(
-                context.object,
+                ob,
                 action=None,
                 frames=range(self.frame_start, self.frame_end + 1),
                 only_selected=True,
@@ -256,19 +474,29 @@ class BakingOperator(object):
                 do_custom_props=True,
             )
 
-        # restoring context
+        # Ensure POSE mode to restore transforms and selection
+        if ob.mode != 'POSE':
+            bpy.ops.object.mode_set(mode='POSE')
+
+        # Restore matrix basis
         for source_bone, matrix_basis in zip(source_bones, source_bones_matrix_basis):
-            context.object.pose.bones[source_bone.name].matrix_basis = matrix_basis
-            source_bone.select = False
-        for b in selected_bones:
-            b.select = True
+            pb = ob.pose.bones.get(source_bone.name)
+            if pb is not None:
+                pb.matrix_basis = matrix_basis
+            select_bone(ob, source_bone.name, False)
 
-        bpy.ops.object.mode_set(mode=mode)
+        # Restore original selection
+        for b_name in selected_bone_names:
+            select_bone(ob, b_name, True)
 
-        if nla_tweak_mode and hasattr(context.object.animation_data, 'use_tweak_mode'):
-            context.object.animation_data.use_tweak_mode = nla_tweak_mode
-        else:
-            context.object.animation_data.action = action
+        # Restore original object mode
+        if ob.mode != prev_mode:
+            bpy.ops.object.mode_set(mode=prev_mode)
+
+        if nla_tweak_mode and hasattr(ob.animation_data, 'use_tweak_mode'):
+            ob.animation_data.use_tweak_mode = nla_tweak_mode
+        elif ob.animation_data and action:
+            ob.animation_data.action = action
 
         return baked_action
 
@@ -340,6 +568,8 @@ class ANIM_OT_carWheelsRotationBake(bpy.types.Operator, BakingOperator):
 
     def _bake_wheel_rotation(self, context, baked_action, bone, brake_bone):
         fc_rot = create_property_animation(context, bone.name.replace('MCH-', ''))
+        if fc_rot is None:
+            return
 
         for f, distance in self._evaluate_distance_per_frame(baked_action, bone, brake_bone):
             kf = fc_rot.keyframe_points.insert(f, distance)
@@ -425,10 +655,11 @@ class ANIM_OT_carSteeringBake(bpy.types.Operator, BakingOperator):
                 pb = context.object.pose.bones[bone.name]
                 pb.matrix_basis.identity()
 
-            for f, steering_pos in self._evaluate_rotation_per_frame(baked_action, bone_offset, bone):
-                kf = fc_rot.keyframe_points.insert(f, steering_pos)
-                kf.type = 'JITTER'
-                kf.interpolation = 'LINEAR'
+            if fc_rot is not None:
+                for f, steering_pos in self._evaluate_rotation_per_frame(baked_action, bone_offset, bone):
+                    kf = fc_rot.keyframe_points.insert(f, steering_pos)
+                    kf.type = 'JITTER'
+                    kf.interpolation = 'LINEAR'
         finally:
             bpy.data.actions.remove(baked_action)
 

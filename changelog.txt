@@ -1,6 +1,14 @@
 Rigacar - Changelog
 ====================
 
+Version 1.0.3:
+- Fixed AttributeError: 'Bone' object has no attribute 'select' by ensuring bone selection/deselection occurs safely in Pose Mode across all Blender 4.0 - 5.2+ API versions.
+- Added select_bone() and is_bone_selected() helpers to handle PoseBone and Bone selection abstractions uniformly.
+
+Version 1.0.2:
+- Fixed AttributeError: 'Action' object has no attribute 'fcurves' on Blender 5.0 - 5.2+ by adding full support for Slotted Actions and ActionChannelbag API.
+- Implemented universal F-Curve lookup, creation, and removal helpers supporting both legacy and modern Blender animation data structures.
+
 Version 1.0.1:
 - Updated author and maintainer attribution to "David Gayerie (fix by Mister Guide)".
 
