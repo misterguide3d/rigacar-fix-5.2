@@ -1,4 +1,4 @@
-Rigacar is a free addon for Blender. It is designed to fulfill the following goals:
+Rigacar is a free addon for Blender 5.2. It is designed to fulfill the following goals:
 
 * generate a complete rig as quickly as possible (actually few seconds) for standard car models
 * provide tools to automate wheels animation
