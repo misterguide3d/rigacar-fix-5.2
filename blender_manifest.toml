@@ -1,0 +1,12 @@
+schema_version = "1.0.0"
+
+id = "rigacar"
+name = "Rigacar"
+version = "1.0.1"
+tagline = "Adds a vehicle deformation rig, animation controls, and baking tools"
+maintainer = "David Gayerie (fix by Mister Guide)"
+type = "add-on"
+license = ["GPL-3.0-or-later"]
+blender_version_min = "5.2.0"
+description = "Complete rigging and animation toolkit for cars and wheeled vehicles in Blender 5.2+."
+permissions = []

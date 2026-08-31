@@ -24,12 +24,12 @@ import bpy_extras
 import mathutils
 import re
 from math import inf
-from rna_prop_ui import rna_idprop_ui_create
 
-CUSTOM_SHAPE_LAYER = 13
-MCH_BONE_EXTENSION_LAYER = 14
-DEF_BONE_LAYER = 15
-MCH_BONE_LAYER = 31
+DEFAULT_VISIBLE_LAYER = 'CarRig_Default_Ctrls'
+CUSTOM_SHAPE_LAYER = 'CarRig_Custom_Ctrls'
+MCH_BONE_EXTENSION_LAYER = 'CarRig_MCH_Bone_Ext'
+DEF_BONE_LAYER = 'CarRig_Def_Bone'
+MCH_BONE_LAYER = 'CarRig_MCH_Bone'
 
 
 def deselect_edit_bones(ob):
@@ -88,12 +88,13 @@ def create_translation_x_driver(ob, bone, driver_data_path):
 
 
 def create_bone_group(pose, group_name, color_set, bone_names):
-    group = pose.bone_groups.new(name=group_name)
-    group.color_set = color_set
     for bone_name in bone_names:
         bone = pose.bones.get(bone_name)
-        if bone is not None:
-            bone.bone_group = group
+        if bone is not None and hasattr(bone, 'color'):
+            try:
+                bone.color.palette = color_set
+            except Exception:
+                pass
 
 
 def name_range(prefix, nb=1000):
@@ -113,38 +114,68 @@ def get_widget(name):
 
 
 def define_custom_property(target, name, value, description=None, overridable=True):
-    rna_idprop_ui_create(target, name, default=value, description=description, overridable=overridable, min=-inf, max=inf)
+    try:
+        target[name] = value
+        ui_data = target.id_properties_ui(name)
+        ui_data.update(default=value, description=description or "")
+        if overridable and hasattr(ui_data, 'overridable'):
+            ui_data.overridable = overridable
+    except Exception:
+        try:
+            from rna_prop_ui import rna_idprop_ui_create
+            rna_idprop_ui_create(target, name, default=value, description=description, overridable=overridable, min=-inf, max=inf)
+        except Exception:
+            target[name] = value
+
+
+def get_or_create_armature_collection(amt, name):
+    col = amt.collections.get(name)
+    if col is None:
+        col = amt.collections.new(name=name)
+    return col
 
 
 def dispatch_bones_to_armature_layers(ob):
+    '''Bone Collections replacement of Armature Layers and Bone Groups in Blender 4.0 / 5.2+.'''
+    amt = ob.data
+
+    default_visible_layer = get_or_create_armature_collection(amt, DEFAULT_VISIBLE_LAYER)
+    custom_shape_layer = get_or_create_armature_collection(amt, CUSTOM_SHAPE_LAYER)
+    def_bone_layer = get_or_create_armature_collection(amt, DEF_BONE_LAYER)
+    mch_bone_layer = get_or_create_armature_collection(amt, MCH_BONE_LAYER)
+    mch_bone_extension_layer = get_or_create_armature_collection(amt, MCH_BONE_EXTENSION_LAYER)
+
+    # set visibility
+    custom_shape_layer.is_visible = False
+    def_bone_layer.is_visible = False
+    mch_bone_extension_layer.is_visible = False
+    mch_bone_layer.is_visible = False
+
     re_mch_bone = re.compile(r'^MCH-Wheel(Brake)?\.(Ft|Bk)\.[LR](\.\d+)?$')
-    default_visible_layers = [False] * 32
-
-    for b in ob.data.bones:
-        layers = [False] * 32
+    for b in amt.bones:
         if b.name.startswith('DEF-'):
-            layers[DEF_BONE_LAYER] = True
+            def_bone_layer.assign(b)
         elif b.name.startswith('MCH-'):
-            layers[MCH_BONE_LAYER] = True
+            mch_bone_layer.assign(b)
             if b.name in ('MCH-Body', 'MCH-Steering') or re_mch_bone.match(b.name):
-                layers[MCH_BONE_EXTENSION_LAYER] = True
+                mch_bone_extension_layer.assign(b)
         else:
-            layer_num = ob.pose.bones[b.name].bone_group_index
-            layers[layer_num] = True
-            default_visible_layers[layer_num] = True
-        b.layers = layers
+            default_visible_layer.assign(b)
 
-    ob.data.layers = default_visible_layers
-
-    shape_bone_layers = [False] * 32
-    shape_bone_layers[CUSTOM_SHAPE_LAYER] = True
     for b in ob.pose.bones:
         if b.custom_shape:
             if b.custom_shape_transform:
-                ob.pose.bones[b.custom_shape_transform.name].custom_shape = b.custom_shape
-                ob.data.bones[b.custom_shape_transform.name].layers = shape_bone_layers
+                target_bone = amt.bones.get(b.custom_shape_transform.name)
+                if target_bone:
+                    custom_shape_layer.assign(target_bone)
             else:
-                ob.data.bones[b.name].layers[CUSTOM_SHAPE_LAYER] = True
+                data_bone = amt.bones.get(b.name)
+                if data_bone:
+                    default_visible_layer.assign(data_bone)
+
+    # remove custom shape from default layer
+    for bone in list(custom_shape_layer.bones):
+        default_visible_layer.unassign(bone)
 
 
 class NameSuffix(object):
@@ -180,7 +211,7 @@ class NameSuffix(object):
 class BoundingBox(object):
 
     def __init__(self, armature, bone_name):
-        objs = [o for o in armature.children if o.parent_bone == bone_name]
+        objs = [o for o in armature.children if getattr(o, 'parent_bone', None) == bone_name]
         bone = armature.data.bones[bone_name]
         self.__center = bone.head.copy()
         if not objs:
@@ -192,9 +223,9 @@ class BoundingBox(object):
     def __compute(self, pmatrix, *objs):
         for obj in objs:
             omatrix = pmatrix @ obj.matrix_world
-            if obj.instance_type == 'COLLECTION':
+            if getattr(obj, 'instance_type', None) == 'COLLECTION' and obj.instance_collection:
                 self.__compute(omatrix, *obj.instance_collection.all_objects)
-            elif obj.bound_box:
+            elif getattr(obj, 'bound_box', None):
                 for p in obj.bound_box:
                     world_p = omatrix @ mathutils.Vector(p)
                     self.__xyz[0] = min(world_p.x, self.__xyz[0])
@@ -434,9 +465,20 @@ def generate_constraint_on_wheel_brake_bone(wheel_brake_pose_bone, wheel_pose_bo
     wheel_brake_pose_bone.lock_rotation_w = True
     wheel_brake_pose_bone.lock_scale = (True, False, False)
     wheel_brake_pose_bone.custom_shape = get_widget('WGT-CarRig.WheelBrake')
-    wheel_brake_pose_bone.bone.show_wire = True
-    wheel_brake_pose_bone.bone_group = wheel_pose_bone.bone_group
-    wheel_brake_pose_bone.bone.layers = wheel_pose_bone.bone.layers
+    if hasattr(wheel_brake_pose_bone.bone, 'show_wire'):
+        try:
+            wheel_brake_pose_bone.bone.show_wire = True
+        except Exception:
+            pass
+
+    amt = bpy.context.object.data
+    groups = amt.collections
+    for group in groups:
+        for bone in group.bones:
+            if bone.name == wheel_pose_bone.name:
+                target_bone = amt.bones.get(wheel_brake_pose_bone.name)
+                if target_bone:
+                    group.assign(target_bone)
 
     cns = wheel_brake_pose_bone.constraints.new('LIMIT_SCALE')
     cns.name = 'Brakes'
@@ -531,6 +573,7 @@ class ArmatureGenerator(object):
         drift.parent = root
         base_bone_parent = drift
 
+        groundsensor_axle_front = None
         if self.dimension.has_front_wheels:
             groundsensor_axle_front = amt.edit_bones.new('GroundSensor.Axle.Ft')
             groundsensor_axle_front.head = self.dimension.wheels_front_position
@@ -553,6 +596,7 @@ class ArmatureGenerator(object):
             if not self.dimension.has_back_wheels:
                 drift.parent = mch_root_axle_front
 
+        groundsensor_axle_back = None
         if self.dimension.has_back_wheels:
             groundsensor_axle_back = amt.edit_bones.new('GroundSensor.Axle.Bk')
             groundsensor_axle_back.head = self.dimension.wheels_back_position
@@ -669,7 +713,6 @@ class ArmatureGenerator(object):
         amt = self.ob.data
 
         def_wheel_bone = amt.edit_bones.get(name_suffix.name('DEF-Wheel'))
-
         if def_wheel_bone is None:
             return
 
@@ -707,12 +750,12 @@ class ArmatureGenerator(object):
 
         def_wheel_brake_bone = amt.edit_bones.get(name_suffix.name('DEF-WheelBrake'))
         if def_wheel_brake_bone is not None:
-            mch_wheel = amt.edit_bones.new(name_suffix.name('MCH-WheelBrake'))
-            mch_wheel.head = def_wheel_brake_bone.head
-            mch_wheel.tail = def_wheel_brake_bone.tail
-            mch_wheel.tail.y += .5
-            mch_wheel.use_deform = False
-            mch_wheel.parent = ground_sensor
+            mch_wheel_brake = amt.edit_bones.new(name_suffix.name('MCH-WheelBrake'))
+            mch_wheel_brake.head = def_wheel_brake_bone.head
+            mch_wheel_brake.tail = def_wheel_brake_bone.tail
+            mch_wheel_brake.tail.y += .5
+            mch_wheel_brake.use_deform = False
+            mch_wheel_brake.parent = ground_sensor
 
         wheel = amt.edit_bones.new(name_suffix.name('Wheel'))
         wheel.use_deform = False
@@ -724,7 +767,8 @@ class ArmatureGenerator(object):
 
         if name_suffix.is_left and name_suffix.is_first:
             wheel_brake = amt.edit_bones.new(name_suffix.name('WheelBrake'))
-            create_wheel_brake_bone(wheel_brake, mch_wheel, wheel)
+            mch_brake_parent = amt.edit_bones.get(name_suffix.name('MCH-WheelBrake')) or mch_wheel
+            create_wheel_brake_bone(wheel_brake, mch_brake_parent, wheel)
 
     def generate_wheel_damper(self, wheel_dimension, parent_bone):
         amt = self.ob.data
@@ -760,7 +804,6 @@ class ArmatureGenerator(object):
 
     def generate_constraints_on_rig(self):
         pose = self.ob.pose
-        amt = self.ob.data
 
         for b in pose.bones:
             if b.name.startswith('DEF-') or b.name.startswith('MCH-') or b.name.startswith('SHP-'):
@@ -801,7 +844,11 @@ class ArmatureGenerator(object):
         root.lock_scale = (True, True, True)
         root.custom_shape = get_widget('WGT-CarRig.Root')
         root.custom_shape_transform = pose.bones['SHP-Root']
-        root.bone.show_wire = True
+        if hasattr(root.bone, 'show_wire'):
+            try:
+                root.bone.show_wire = True
+            except Exception:
+                pass
 
         for ground_sensor_axle_name in ('GroundSensor.Axle.Ft', 'GroundSensor.Axle.Bk'):
             groundsensor_axle = pose.bones.get(ground_sensor_axle_name)
@@ -812,7 +859,11 @@ class ArmatureGenerator(object):
                 groundsensor_axle.custom_shape = get_widget('WGT-CarRig.GroundSensor.Axle')
                 groundsensor_axle.lock_rotation_w = True
                 groundsensor_axle.custom_shape_transform = pose.bones['SHP-%s' % groundsensor_axle.name]
-                groundsensor_axle.bone.show_wire = True
+                if hasattr(groundsensor_axle.bone, 'show_wire'):
+                    try:
+                        groundsensor_axle.bone.show_wire = True
+                    except Exception:
+                        pass
                 self.generate_ground_projection_constraint(groundsensor_axle)
 
                 if groundsensor_axle.name == 'GroundSensor.Axle.Ft' and 'GroundSensor.Axle.Bk' in pose.bones:
@@ -841,14 +892,22 @@ class ArmatureGenerator(object):
         drift.rotation_mode = 'ZYX'
         drift.custom_shape = get_widget('WGT-CarRig.DriftHandle')
         drift.custom_shape_transform = pose.bones['SHP-Drift']
-        drift.bone.show_wire = True
+        if hasattr(drift.bone, 'show_wire'):
+            try:
+                drift.bone.show_wire = True
+            except Exception:
+                pass
 
         suspension = pose.bones['Suspension']
         suspension.lock_rotation = (True, True, True)
         suspension.lock_scale = (True, True, True)
         suspension.lock_rotation_w = True
         suspension.custom_shape = get_widget('WGT-CarRig.Suspension')
-        suspension.bone.show_wire = True
+        if hasattr(suspension.bone, 'show_wire'):
+            try:
+                suspension.bone.show_wire = True
+            except Exception:
+                pass
 
         steering = pose.bones.get('Steering')
         if steering is not None:
@@ -857,7 +916,11 @@ class ArmatureGenerator(object):
             steering.lock_scale = (True, True, True)
             steering.lock_rotation_w = True
             steering.custom_shape = get_widget('WGT-CarRig.Steering')
-            steering.bone.show_wire = True
+            if hasattr(steering.bone, 'show_wire'):
+                try:
+                    steering.bone.show_wire = True
+                except Exception:
+                    pass
 
             mch_steering_rotation = pose.bones['MCH-Steering.rotation']
             mch_steering_rotation.rotation_mode = 'QUATERNION'
@@ -995,7 +1058,6 @@ class ArmatureGenerator(object):
             cns.owner_space = 'WORLD'
             cns.target_space = 'WORLD'
 
-            mch_axis = pose.bones['MCH-Axis.%s' % position]
             cns = mch_axis.constraints.new('DAMPED_TRACK')
             cns.name = 'Track Left Wheel'
             cns.target = self.ob
@@ -1026,7 +1088,11 @@ class ArmatureGenerator(object):
         ground_sensor.lock_scale = (True, True, True)
         ground_sensor.custom_shape = get_widget('WGT-CarRig.GroundSensor')
         ground_sensor.custom_shape_transform = pose.bones['SHP-%s' % ground_sensor.name]
-        ground_sensor.bone.show_wire = True
+        if hasattr(ground_sensor.bone, 'show_wire'):
+            try:
+                ground_sensor.bone.show_wire = True
+            except Exception:
+                pass
 
         if name_suffix.is_front:
             cns = ground_sensor.constraints.new('COPY_ROTATION')
@@ -1064,7 +1130,11 @@ class ArmatureGenerator(object):
         wheel.lock_rotation = (False, True, True)
         wheel.lock_scale = (True, True, True)
         wheel.custom_shape = get_widget('WGT-CarRig.Wheel')
-        wheel.bone.show_wire = True
+        if hasattr(wheel.bone, 'show_wire'):
+            try:
+                wheel.bone.show_wire = True
+            except Exception:
+                pass
 
         wheel_brake = pose.bones.get(name_suffix.name('WheelBrake'))
         if wheel_brake:
@@ -1127,7 +1197,11 @@ class ArmatureGenerator(object):
             wheel_damper.lock_rotation_w = True
             wheel_damper.lock_scale = (True, True, True)
             wheel_damper.custom_shape = get_widget('WGT-CarRig.WheelDamper')
-            wheel_damper.bone.show_wire = True
+            if hasattr(wheel_damper.bone, 'show_wire'):
+                try:
+                    wheel_damper.bone.show_wire = True
+                except Exception:
+                    pass
 
         mch_ground_sensor = pose.bones.get(wheel_dimension.name('MCH-GroundSensor'))
         if mch_ground_sensor is not None:
@@ -1252,15 +1326,15 @@ class OBJECT_OT_armatureCarDeformationRig(bpy.types.Operator):
 
     def invoke(self, context, event):
         self.bones_position = {
-            'Body':       mathutils.Vector((0.0,  0,  .8)),
-            'Wheel.Ft.L': mathutils.Vector((0.9, -2,  .5)),
-            'Wheel.Ft.R': mathutils.Vector((-.9, -2,  .5)),
-            'Wheel.Bk.L': mathutils.Vector((0.9,  2,  .5)),
-            'Wheel.Bk.R': mathutils.Vector((-.9,  2,  .5)),
-            'WheelBrake.Ft.L': mathutils.Vector((0.8, -2,  .5)),
-            'WheelBrake.Ft.R': mathutils.Vector((-.8, -2,  .5)),
-            'WheelBrake.Bk.L': mathutils.Vector((0.8,  2,  .5)),
-            'WheelBrake.Bk.R': mathutils.Vector((-.8,  2,  .5))
+            'Body': mathutils.Vector((0.0, 0, .8)),
+            'Wheel.Ft.L': mathutils.Vector((0.9, -2, .5)),
+            'Wheel.Ft.R': mathutils.Vector((-.9, -2, .5)),
+            'Wheel.Bk.L': mathutils.Vector((0.9, 2, .5)),
+            'Wheel.Bk.R': mathutils.Vector((-.9, 2, .5)),
+            'WheelBrake.Ft.L': mathutils.Vector((0.8, -2, .5)),
+            'WheelBrake.Ft.R': mathutils.Vector((-.8, -2, .5)),
+            'WheelBrake.Bk.L': mathutils.Vector((0.8, 2, .5)),
+            'WheelBrake.Bk.R': mathutils.Vector((-.8, 2, .5))
         }
         self.target_objects_name = {}
 
@@ -1311,11 +1385,9 @@ class OBJECT_OT_armatureCarDeformationRig(bpy.types.Operator):
 
         rig = bpy_extras.object_utils.object_data_add(context, amt, name='Car Rig')
 
-        # TODO: cannot edit new object added to a hidden collection
-        # Could be a better fix (steal code from other addons).
         try:
             bpy.ops.object.mode_set(mode='EDIT')
-        except TypeError:
+        except (TypeError, RuntimeError):
             self.report({'ERROR'}, "Cannot edit the new armature! Please make sure the active collection is visible and editable")
             return {'CANCELLED'}
 
@@ -1366,13 +1438,15 @@ class OBJECT_OT_armatureCarDeformationRig(bpy.types.Operator):
         return b
 
     def _create_wheel_bones(self, rig, base_wheel_name, nb_wheels, delta_pos):
+        previous_wheel = None
+        previous_wheel_default_pos = None
         for wheel_name in name_range(base_wheel_name, nb_wheels):
-            if wheel_name not in self.bones_position:
+            if wheel_name not in self.bones_position and previous_wheel is not None and previous_wheel_default_pos is not None:
                 wheel_position = previous_wheel_default_pos.copy()
                 wheel_position.y += abs(previous_wheel.head.z * 2.2)
                 self.bones_position[wheel_name] = wheel_position
             previous_wheel = self._create_bone(rig, wheel_name, delta_pos)
-            previous_wheel_default_pos = self.bones_position[wheel_name]
+            previous_wheel_default_pos = self.bones_position.get(wheel_name, previous_wheel.head.copy())
 
 
 class POSE_OT_carAnimationRigGenerate(bpy.types.Operator):
@@ -1416,8 +1490,8 @@ class POSE_OT_carAnimationAddBrakeWheelBones(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return context.object.mode == 'POSE' and\
-               context.object is not None and context.object.data is not None and\
+        return context.object is not None and context.object.mode == 'POSE' and\
+               context.object.data is not None and\
                context.object.data.get('Car Rig')
 
     def execute(self, context):

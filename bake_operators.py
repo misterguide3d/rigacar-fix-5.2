@@ -19,6 +19,7 @@
 # <pep8 compliant>
 
 import bpy
+import bpy_extras.anim_utils
 import mathutils
 import math
 import itertools
@@ -77,7 +78,9 @@ def clear_property_animation(context, property_name, remove_keyframes=True):
     if remove_keyframes and context.object.animation_data and context.object.animation_data.action:
         fcurve_datapath = '["%s"]' % property_name
         action = context.object.animation_data.action
-        fcurve = action.fcurves.find(fcurve_datapath)
+        fcurve = action.fcurves.find(fcurve_datapath, index=0)
+        if fcurve is None:
+            fcurve = action.fcurves.find(fcurve_datapath)
         if fcurve is not None:
             action.fcurves.remove(fcurve)
     context.object[property_name] = .0
@@ -86,7 +89,10 @@ def clear_property_animation(context, property_name, remove_keyframes=True):
 def create_property_animation(context, property_name):
     action = context.object.animation_data.action
     fcurve_datapath = '["%s"]' % property_name
-    return action.fcurves.new(fcurve_datapath, index=0, action_group='Wheels rotation')
+    try:
+        return action.fcurves.new(fcurve_datapath, index=0, action_group='Wheels rotation')
+    except TypeError:
+        return action.fcurves.new(fcurve_datapath, index=0)
 
 
 class FCurvesEvaluator(object):
@@ -135,7 +141,7 @@ class QuaternionFCurvesEvaluator(object):
 
 def fix_old_steering_rotation(rig_object):
     """
-    Fix  armature generated with rigacar version < 6.0
+    Fix armature generated with rigacar version < 6.0
     """
     if rig_object.pose and rig_object.pose.bones:
         if 'MCH-Steering.rotation' in rig_object.pose.bones:
@@ -149,7 +155,9 @@ class BakingOperator(object):
 
     @classmethod
     def poll(cls, context):
-        return ('Car Rig' in context.object.data and
+        return (context.object is not None and
+                context.object.data is not None and
+                'Car Rig' in context.object.data and
                 context.object.data['Car Rig'] and
                 context.object.mode in ('POSE', 'OBJECT'))
 
@@ -194,10 +202,10 @@ class BakingOperator(object):
 
     def _bake_action(self, context, *source_bones):
         action = context.object.animation_data.action
-        nla_tweak_mode = context.object.animation_data.use_tweak_mode if hasattr(context.object.animation_data, 'use_tweak_mode') else False
+        nla_tweak_mode = getattr(context.object.animation_data, 'use_tweak_mode', False)
 
         # saving context
-        selected_bones = [b for b in context.object.data.bones if b.select]
+        selected_bones = [b for b in context.object.data.bones if getattr(b, 'select', False)]
         mode = context.object.mode
         for b in selected_bones:
             b.select = False
@@ -208,14 +216,45 @@ class BakingOperator(object):
             source_bones_matrix_basis.append(context.object.pose.bones[source_bone.name].matrix_basis.copy())
             source_bone.select = True
 
-        # Blender 2.81 : Another hack for another bug in the bake operator
-        # removing from the selection objects which are not the current one
-        for obj in context.selected_objects:
-            if obj is not context.object:
-                obj.select_set(state=False)
-
-        bpy.ops.nla.bake(frame_start=self.frame_start, frame_end=self.frame_end, only_selected=True, bake_types={'POSE'}, visual_keying=True)
-        baked_action = context.object.animation_data.action
+        try:
+            bake_options = bpy_extras.anim_utils.BakeOptions(
+                only_selected=True,
+                do_pose=True,
+                do_object=False,
+                do_visual_keying=True,
+                do_constraint_clear=False,
+                do_parents_clear=False,
+                do_clean=False,
+                do_location=True,
+                do_rotation=True,
+                do_scale=True,
+                do_bbone=True,
+                do_custom_props=True
+            )
+            baked_action = bpy_extras.anim_utils.bake_action(
+                context.object,
+                action=None,
+                frames=range(self.frame_start, self.frame_end + 1),
+                bake_options=bake_options,
+            )
+        except (TypeError, AttributeError):
+            baked_action = bpy_extras.anim_utils.bake_action(
+                context.object,
+                action=None,
+                frames=range(self.frame_start, self.frame_end + 1),
+                only_selected=True,
+                do_pose=True,
+                do_object=False,
+                do_visual_keying=True,
+                do_constraint_clear=False,
+                do_parents_clear=False,
+                do_clean=False,
+                do_location=True,
+                do_rotation=True,
+                do_scale=True,
+                do_bbone=True,
+                do_custom_props=True,
+            )
 
         # restoring context
         for source_bone, matrix_basis in zip(source_bones, source_bones_matrix_basis):
@@ -226,7 +265,7 @@ class BakingOperator(object):
 
         bpy.ops.object.mode_set(mode=mode)
 
-        if nla_tweak_mode:
+        if nla_tweak_mode and hasattr(context.object.animation_data, 'use_tweak_mode'):
             context.object.animation_data.use_tweak_mode = nla_tweak_mode
         else:
             context.object.animation_data.action = action
@@ -259,8 +298,8 @@ class ANIM_OT_carWheelsRotationBake(bpy.types.Operator, BakingOperator):
         for property_name in map(lambda wheel_bone: wheel_bone.name.replace('MCH-', ''), wheel_bones):
             clear_property_animation(context, property_name)
 
-        bones = set(wheel_bones + brake_bones)
-        baked_action = self._bake_action(context, *bones)
+        bones_to_bake = set(wheel_bones + brake_bones)
+        baked_action = self._bake_action(context, *bones_to_bake)
 
         try:
             for wheel_bone, brake_bone in zip(wheel_bones, brake_bones):
@@ -377,15 +416,21 @@ class ANIM_OT_carSteeringBake(bpy.types.Operator, BakingOperator):
         clear_property_animation(context, 'Steering.rotation')
         fix_old_steering_rotation(context.object)
         fc_rot = create_property_animation(context, 'Steering.rotation')
-        action = self._bake_action(context, bone)
+        baked_action = self._bake_action(context, bone)
 
         try:
-            for f, steering_pos in self._evaluate_rotation_per_frame(action, bone_offset, bone):
+            # Reset the transform of the steering bone, because baking action manipulates the transform
+            # and evaluate_rotation_frame expects it at its default position
+            if bone.name in context.object.pose.bones:
+                pb = context.object.pose.bones[bone.name]
+                pb.matrix_basis.identity()
+
+            for f, steering_pos in self._evaluate_rotation_per_frame(baked_action, bone_offset, bone):
                 kf = fc_rot.keyframe_points.insert(f, steering_pos)
                 kf.type = 'JITTER'
                 kf.interpolation = 'LINEAR'
         finally:
-            bpy.data.actions.remove(action)
+            bpy.data.actions.remove(baked_action)
 
 
 class ANIM_OT_carClearSteeringWheelsRotation(bpy.types.Operator):
@@ -409,14 +454,12 @@ class ANIM_OT_carClearSteeringWheelsRotation(bpy.types.Operator):
 
     def execute(self, context):
         re_wheel_propname = re.compile(r'^Wheel\.rotation\.(Ft|Bk)\.[LR](\.\d+)?$')
-        for prop in context.object.keys():
+        for prop in list(context.object.keys()):
             if prop == 'Steering.rotation':
                 clear_property_animation(context, prop, remove_keyframes=self.clear_steering)
             elif re_wheel_propname.match(prop):
                 clear_property_animation(context, prop, remove_keyframes=self.clear_wheels)
-        # this is a hack to force Blender to take into account the modification
-        # of the properties by changing the object mode.
-        # Don't know yet if it is specific to blender 2.80
+
         mode = context.object.mode
         bpy.ops.object.mode_set(mode='OBJECT' if mode == 'POSE' else 'POSE')
         bpy.ops.object.mode_set(mode=mode)

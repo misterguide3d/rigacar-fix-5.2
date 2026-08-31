@@ -1,0 +1,15 @@
+Rigacar - Changelog
+====================
+
+Version 1.0.1:
+- Updated author and maintainer attribution to "David Gayerie (fix by Mister Guide)".
+
+Version 1.0.0:
+- Fully ported and modernized for Blender 5.2+ Extensions system.
+- Replaced legacy bl_info with modern blender_manifest.toml format.
+- Implemented complete bilingual localization (English & Russian) using bpy.app.translations.
+- Fixed Bone Collections management for Blender 4.0 - 5.2+ (prevent duplicate collection errors).
+- Fixed variable typo in brake bone assignment (wheel_pose_bone.anme -> wheel_pose_bone.name).
+- Modernized custom properties initialization using id_properties_ui.
+- Added compatibility handling for bpy_extras.anim_utils.bake_action BakeOptions.
+- Safeguarded bone wireframe display flags (show_wire) for modern viewport display pipeline.

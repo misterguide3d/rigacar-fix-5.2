@@ -18,45 +18,100 @@
 
 # <pep8 compliant>
 
-bl_info = {
-    "name": "Rigacar (Generates Car Rig)",
-    "author": "David Gayerie",
-    "version": (7, 1),
-    "blender": (2, 83, 0),
-    "location": "View3D > Add > Armature",
-    "description": "Adds a deformation rig for vehicules, generates animation rig and bake wheels animation.",
-    "wiki_url": "http://digicreatures.net/articles/rigacar.html",
-    "tracker_url": "https://github.com/digicreatures/rigacar/issues",
-    "category": "Rigging"}
+import bpy
 
-
-if "bpy" in locals():
+if "bake_operators" in locals():
     import importlib
-    if "bake_operators" in locals():
-        importlib.reload(bake_operators)
-    if "car_rig" in locals():
-        importlib.reload(car_rig)
-    if "widgets" in locals():
-        importlib.reload(widgets)
+    importlib.reload(bake_operators)
+    importlib.reload(car_rig)
+    importlib.reload(widgets)
 else:
-    import bpy
     from . import bake_operators
     from . import car_rig
+    from . import widgets
+
+
+translations_dict = {
+    "ru_RU": {
+        ("*", "Rigacar"): "Rigacar",
+        ("*", "Animation Rig"): "Риг анимации",
+        ("*", "Wheels animation"): "Анимация колёс",
+        ("*", "Ground Sensors"): "Датчики поверхности",
+        ("*", "Ground projection"): "Проекция на поверхность",
+        ("*", "Ground projection limitation"): "Ограничение проекции на поверхность",
+        ("*", "Wheels on Y axis"): "Вращение колёс по оси Y",
+        ("*", "Pitch factor"): "Фактор наклона (Pitch)",
+        ("*", "Roll factor"): "Фактор крена (Roll)",
+        ("*", "Ground"): "Поверхность",
+        ("*", "Min local Z"): "Мин. локальный Z",
+        ("*", "Max local Z"): "Макс. локальный Z",
+        ("*", "Generate"): "Сгенерировать",
+        ("*", "Car (deformation rig)"): "Автомобиль (деформационный риг)",
+        ("*", "Add car deformation rig"): "Создать деформационный риг автомобиля",
+        ("*", "Creates the base rig for a car."): "Создает базовый деформационный скелет для автомобиля.",
+        ("*", "Generate car animation rig"): "Сгенерировать анимационный риг автомобиля",
+        ("*", "Creates the complete armature for animating the car."): "Создает полную систему костей и элементов управления для анимации автомобиля.",
+        ("*", "Bake wheels rotation"): "Запечь вращение колёс",
+        ("*", "Automatically generates wheels animation based on Root bone animation."): "Автоматически рассчитывает и запекает вращение колёс на основе движения корневой кости (Root).",
+        ("*", "Bake car steering"): "Запечь поворот руля",
+        ("*", "Automatically generates steering animation based on Root bone animation."): "Автоматически рассчитывает и запекает поворот передних колёс и руля на основе траектории корневой кости.",
+        ("*", "Clear baked animation"): "Очистить запечённую анимацию",
+        ("*", "Clear generated rotation for steering and wheels"): "Очистить сгенерированные ключевые кадры для руля и вращения колёс.",
+        ("*", "Add missing brake wheel bones"): "Добавить недостающие кости тормозов",
+        ("*", "Generates missing brake wheel bones for each selected wheel widget."): "Генерирует недостающие кости тормозных суппортов для выбранных виджетов колёс.",
+        ("*", "Start Frame"): "Начальный кадр",
+        ("*", "End Frame"): "Конечный кадр",
+        ("*", "Keyframe tolerance"): "Допуск ключевых кадров",
+        ("*", "Rotation factor"): "Фактор поворота",
+        ("*", "Clear generated keyframes for"): "Очистить ключевые кадры для:",
+        ("*", "Steering"): "Рулевое управление",
+        ("*", "Wheels"): "Колёса",
+        ("*", "Body"): "Кузов",
+        ("*", "Front wheels"): "Передние колёса",
+        ("*", "Back wheels"): "Задние колёса",
+        ("*", "Brakes"): "Тормоза",
+        ("*", "Pairs"): "Пары",
+        ("*", "Front Pairs"): "Передние пары",
+        ("*", "Back Pairs"): "Задние пары",
+        ("*", "Delta Location"): "Смещение позиции",
+        ("*", "Front Delta Location"): "Переднее смещение",
+        ("*", "Back Delta Location"): "Заднее смещение",
+        ("*", "Number of front wheels pairs"): "Количество пар передних колёс",
+        ("*", "Number of back wheels pairs"): "Количество пар задних колёс",
+        ("*", "Number of front wheel brakes pairs"): "Количество пар передних тормозов",
+        ("*", "Number of back wheel brakes pairs"): "Количество пар задних тормозов",
+        ("*", "Extra translation added to location of the car body"): "Дополнительное смещение для кузова автомобиля",
+        ("*", "Extra translation added to location of the front wheels"): "Дополнительное смещение для передних колёс",
+        ("*", "Extra translation added to location of the back wheels"): "Дополнительное смещение для задних колёс",
+        ("*", "Extra translation added to location of the front brakes"): "Дополнительное смещение для передних тормозов",
+        ("*", "Extra translation added to location of the back brakes"): "Дополнительное смещение для задних тормозов",
+        ("*", "Move origin"): "Переместить Origin",
+        ("*", "Set origin of the armature at the same location as the root bone"): "Установить точку отсчета (Origin) скелета в позицию корневой кости Root",
+        ("*", "Rig already generated"): "Риг уже сгенерирован",
+        ("*", "No bone named DEF-Body. This is not a valid armature!"): "Кость DEF-Body не найдена. Это некорректный скелет!",
+        ("*", "Cannot edit the new armature! Please make sure the active collection is visible and editable"): "Невозможно редактировать новый скелет! Убедитесь, что активная коллекция видима и доступна для редактирования.",
+        ("*", "Activate wheels rotation when moving the root bone along the Y axis"): "Активировать вращение колёс при перемещении корневой кости вдоль оси Y",
+        ("*", "Influence of the dampers over the pitch of the body"): "Влияние амортизаторов на продольный наклон кузова (Pitch)",
+        ("*", "Influence of the dampers over the roll of the body"): "Влияние амортизаторов на поперечный крен кузова (Roll)",
+        ("*", "Animation property for wheel spinning"): "Анимационное свойство для вращения колеса",
+        ("*", "Animation property for steering"): "Анимационное свойство для поворота руля",
+    }
+}
 
 
 def enumerate_ground_sensors(bones):
     bone = bones.get('GroundSensor.Axle.Ft')
     if bone is not None:
         yield bone
-        for bone in bones:
-            if bone.name.startswith('GroundSensor.Ft'):
-                yield bone
+        for b in bones:
+            if b.name.startswith('GroundSensor.Ft'):
+                yield b
     bone = bones.get('GroundSensor.Axle.Bk')
     if bone is not None:
         yield bone
-        for bone in bones:
-            if bone.name.startswith('GroundSensor.Bk'):
-                yield bone
+        for b in bones:
+            if b.name.startswith('GroundSensor.Bk'):
+                yield b
 
 
 class RIGACAR_PT_mixin:
@@ -67,11 +122,13 @@ class RIGACAR_PT_mixin:
 
     @classmethod
     def is_car_rig(cls, context):
-        return context.object is not None and context.object.data is not None and 'Car Rig' in context.object.data
+        return (context.object is not None and
+                context.object.data is not None and
+                'Car Rig' in context.object.data)
 
     @classmethod
     def is_car_rig_generated(cls, context):
-        return cls.is_car_rig(context) and context.object.data['Car Rig']
+        return cls.is_car_rig(context) and context.object.data.get('Car Rig', False)
 
     def display_generate_section(self, context):
         self.layout.operator(car_rig.POSE_OT_carAnimationRigGenerate.bl_idname, text='Generate')
@@ -192,15 +249,20 @@ def menu_entries(menu, context):
 
 
 classes = (
-  RIGACAR_PT_rigProperties,
-  RIGACAR_PT_groundSensorsProperties,
-  RIGACAR_PT_animationRigView,
-  RIGACAR_PT_wheelsAnimationView,
-  RIGACAR_PT_groundSensorsView,
+    RIGACAR_PT_rigProperties,
+    RIGACAR_PT_groundSensorsProperties,
+    RIGACAR_PT_animationRigView,
+    RIGACAR_PT_wheelsAnimationView,
+    RIGACAR_PT_groundSensorsView,
 )
 
 
 def register():
+    try:
+        bpy.app.translations.register(__name__, translations_dict)
+    except Exception:
+        pass
+
     bpy.types.VIEW3D_MT_armature_add.append(menu_entries)
     for c in classes:
         bpy.utils.register_class(c)
@@ -214,6 +276,11 @@ def unregister():
     for c in classes:
         bpy.utils.unregister_class(c)
     bpy.types.VIEW3D_MT_armature_add.remove(menu_entries)
+
+    try:
+        bpy.app.translations.unregister(__name__)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

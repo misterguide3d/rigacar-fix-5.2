@@ -29,11 +29,11 @@ def create():
         c.hide_viewport = True
         c.hide_render = True
         c.hide_select = True
-
-    widgets_collection = bpy.data.collections[COLLECTION_NAME]
+    else:
+        c = bpy.data.collections[COLLECTION_NAME]
 
     if COLLECTION_NAME not in bpy.context.scene.collection.children:
-        bpy.context.scene.collection.children.link(widgets_collection)
+        bpy.context.scene.collection.children.link(c)
 
     for name, widget in get_widgets().items():
         object_name = 'WGT-CarRig.%s' % name
@@ -44,8 +44,8 @@ def create():
         else:
             o = bpy.data.objects[object_name]
 
-        if object_name not in widgets_collection.objects:
-            widgets_collection.objects.link(o)
+        if object_name not in c.objects:
+            c.objects.link(o)
 
 
 def get_widgets():
@@ -363,6 +363,7 @@ def get_widgets():
     }
 
     return widgets
+
 
 if __name__ == "__main__":
     create()
